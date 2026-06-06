@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "binance-trading-bot"
-version = "0.1.0"
+version = "0.2.0"
 description = "Binance API trading bot with HMAC request signing and paper trading — by Viprasol Tech."
 readme = "README.md"
 requires-python = ">=3.11"

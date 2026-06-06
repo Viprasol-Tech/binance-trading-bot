@@ -18,6 +18,28 @@ from typing import TypedDict
 from binance_trading_bot.auth import build_signed_query, encode_params
 
 DEFAULT_BASE_URL = "https://api.binance.com"
+TESTNET_BASE_URL = "https://testnet.binance.vision"
+
+#: Valid kline / candlestick intervals accepted by ``GET /api/v3/klines``.
+VALID_INTERVALS: frozenset[str] = frozenset(
+    {
+        "1m",
+        "3m",
+        "5m",
+        "15m",
+        "30m",
+        "1h",
+        "2h",
+        "4h",
+        "6h",
+        "8h",
+        "12h",
+        "1d",
+        "3d",
+        "1w",
+        "1M",
+    }
+)
 
 
 class PreparedRequest(TypedDict):
@@ -153,3 +175,255 @@ class BinanceClient:
             params,
             timestamp_ms=timestamp_ms,
         )
+
+    def prepare_limit_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        price: float,
+        *,
+        time_in_force: str = "GTC",
+        timestamp_ms: int | None = None,
+    ) -> PreparedRequest:
+        """Prepare a signed ``LIMIT`` ``POST /api/v3/order`` request.
+
+        Args:
+            symbol: Trading pair, e.g. ``"BTCUSDT"``.
+            side: ``"BUY"`` or ``"SELL"`` (upper-cased automatically).
+            quantity: Base-asset quantity to trade; must be positive.
+            price: Limit price in quote currency; must be positive.
+            time_in_force: ``"GTC"``, ``"IOC"`` or ``"FOK"``. Binance requires
+                this on ``LIMIT`` orders.
+            timestamp_ms: Optional fixed timestamp in milliseconds.
+
+        Returns:
+            The prepared, signed limit-order request.
+
+        Raises:
+            ValueError: If ``quantity``/``price`` are non-positive or
+                ``time_in_force`` is not a recognised value.
+        """
+        _require_positive("quantity", quantity)
+        _require_positive("price", price)
+        tif = _validate_tif(time_in_force)
+        params: dict[str, object] = {
+            "symbol": symbol.upper(),
+            "side": side.upper(),
+            "type": "LIMIT",
+            "timeInForce": tif,
+            "quantity": quantity,
+            "price": price,
+        }
+        return self.prepare_signed_request(
+            "POST", "/api/v3/order", params, timestamp_ms=timestamp_ms
+        )
+
+    def prepare_stop_loss_limit_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        price: float,
+        stop_price: float,
+        *,
+        time_in_force: str = "GTC",
+        timestamp_ms: int | None = None,
+    ) -> PreparedRequest:
+        """Prepare a signed ``STOP_LOSS_LIMIT`` order request.
+
+        A stop-loss-limit triggers a limit order once the market trades through
+        ``stop_price``.
+
+        Args:
+            symbol: Trading pair, e.g. ``"BTCUSDT"``.
+            side: ``"BUY"`` or ``"SELL"``.
+            quantity: Base-asset quantity; must be positive.
+            price: Limit price once triggered; must be positive.
+            stop_price: Trigger price; must be positive.
+            time_in_force: ``"GTC"``, ``"IOC"`` or ``"FOK"``.
+            timestamp_ms: Optional fixed timestamp in milliseconds.
+
+        Returns:
+            The prepared, signed stop-loss-limit order request.
+        """
+        _require_positive("quantity", quantity)
+        _require_positive("price", price)
+        _require_positive("stop_price", stop_price)
+        tif = _validate_tif(time_in_force)
+        params: dict[str, object] = {
+            "symbol": symbol.upper(),
+            "side": side.upper(),
+            "type": "STOP_LOSS_LIMIT",
+            "timeInForce": tif,
+            "quantity": quantity,
+            "price": price,
+            "stopPrice": stop_price,
+        }
+        return self.prepare_signed_request(
+            "POST", "/api/v3/order", params, timestamp_ms=timestamp_ms
+        )
+
+    def prepare_oco_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        price: float,
+        stop_price: float,
+        stop_limit_price: float,
+        *,
+        stop_limit_time_in_force: str = "GTC",
+        timestamp_ms: int | None = None,
+    ) -> PreparedRequest:
+        """Prepare a signed OCO (one-cancels-the-other) order request.
+
+        Targets ``POST /api/v3/order/oco`` and pairs a take-profit limit leg
+        (``price``) with a protective stop leg (``stop_price`` /
+        ``stop_limit_price``).
+
+        Args:
+            symbol: Trading pair, e.g. ``"BTCUSDT"``.
+            side: ``"BUY"`` or ``"SELL"``.
+            quantity: Base-asset quantity; must be positive.
+            price: Limit price of the take-profit leg; must be positive.
+            stop_price: Trigger price of the stop leg; must be positive.
+            stop_limit_price: Limit price of the stop leg once triggered;
+                must be positive.
+            stop_limit_time_in_force: TIF for the stop-limit leg.
+            timestamp_ms: Optional fixed timestamp in milliseconds.
+
+        Returns:
+            The prepared, signed OCO order request.
+        """
+        for label, value in (
+            ("quantity", quantity),
+            ("price", price),
+            ("stop_price", stop_price),
+            ("stop_limit_price", stop_limit_price),
+        ):
+            _require_positive(label, value)
+        tif = _validate_tif(stop_limit_time_in_force)
+        params: dict[str, object] = {
+            "symbol": symbol.upper(),
+            "side": side.upper(),
+            "quantity": quantity,
+            "price": price,
+            "stopPrice": stop_price,
+            "stopLimitPrice": stop_limit_price,
+            "stopLimitTimeInForce": tif,
+        }
+        return self.prepare_signed_request(
+            "POST", "/api/v3/order/oco", params, timestamp_ms=timestamp_ms
+        )
+
+    def prepare_klines(
+        self,
+        symbol: str,
+        interval: str,
+        *,
+        limit: int = 500,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+    ) -> PreparedRequest:
+        """Prepare an unsigned ``GET /api/v3/klines`` (candlestick) request.
+
+        Args:
+            symbol: Trading pair, e.g. ``"BTCUSDT"``.
+            interval: Candle interval such as ``"1m"``, ``"1h"`` or ``"1d"``;
+                must be one of :data:`VALID_INTERVALS`.
+            limit: Number of candles to return (1..1000). Defaults to 500.
+            start_time_ms: Optional inclusive start time in milliseconds.
+            end_time_ms: Optional inclusive end time in milliseconds.
+
+        Returns:
+            The prepared public klines request.
+
+        Raises:
+            ValueError: If ``interval`` is unknown or ``limit`` is out of range.
+        """
+        if interval not in VALID_INTERVALS:
+            raise ValueError(f"unknown interval {interval!r}")
+        if not 1 <= limit <= 1000:
+            raise ValueError(f"limit must be in 1..1000, got {limit}")
+        params: dict[str, object] = {
+            "symbol": symbol.upper(),
+            "interval": interval,
+            "limit": limit,
+        }
+        if start_time_ms is not None:
+            params["startTime"] = start_time_ms
+        if end_time_ms is not None:
+            params["endTime"] = end_time_ms
+        return self.prepare_public_request("GET", "/api/v3/klines", params)
+
+    def prepare_account(self, *, timestamp_ms: int | None = None) -> PreparedRequest:
+        """Prepare a signed ``GET /api/v3/account`` (balances) request.
+
+        Args:
+            timestamp_ms: Optional fixed timestamp in milliseconds.
+
+        Returns:
+            The prepared, signed account request.
+        """
+        return self.prepare_signed_request("GET", "/api/v3/account", timestamp_ms=timestamp_ms)
+
+    def prepare_cancel_order(
+        self,
+        symbol: str,
+        *,
+        order_id: int | None = None,
+        orig_client_order_id: str | None = None,
+        timestamp_ms: int | None = None,
+    ) -> PreparedRequest:
+        """Prepare a signed ``DELETE /api/v3/order`` request.
+
+        Identify the order by exchange ``order_id`` or by the client-assigned
+        ``orig_client_order_id``; exactly one is required.
+
+        Args:
+            symbol: Trading pair, e.g. ``"BTCUSDT"``.
+            order_id: Exchange order id to cancel.
+            orig_client_order_id: Original client order id to cancel.
+            timestamp_ms: Optional fixed timestamp in milliseconds.
+
+        Returns:
+            The prepared, signed cancel request.
+
+        Raises:
+            ValueError: If neither or both identifiers are supplied.
+        """
+        if (order_id is None) == (orig_client_order_id is None):
+            raise ValueError("supply exactly one of order_id or orig_client_order_id")
+        params: dict[str, object] = {"symbol": symbol.upper()}
+        if order_id is not None:
+            params["orderId"] = order_id
+        if orig_client_order_id is not None:
+            params["origClientOrderId"] = orig_client_order_id
+        return self.prepare_signed_request(
+            "DELETE", "/api/v3/order", params, timestamp_ms=timestamp_ms
+        )
+
+
+def _require_positive(label: str, value: float) -> None:
+    """Raise ``ValueError`` unless ``value`` is strictly positive."""
+    if value <= 0:
+        raise ValueError(f"{label} must be positive, got {value}")
+
+
+def _validate_tif(time_in_force: str) -> str:
+    """Normalise and validate a time-in-force value.
+
+    Args:
+        time_in_force: Candidate value; case-insensitive.
+
+    Returns:
+        The upper-cased, validated TIF (``"GTC"``, ``"IOC"`` or ``"FOK"``).
+
+    Raises:
+        ValueError: If the value is not a recognised TIF.
+    """
+    tif = time_in_force.upper()
+    if tif not in {"GTC", "IOC", "FOK"}:
+        raise ValueError(f"invalid time_in_force {time_in_force!r}; use GTC, IOC or FOK")
+    return tif
