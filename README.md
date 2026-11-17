@@ -75,13 +75,17 @@ req = client.prepare_limit_order(
     "BTCUSDT", "BUY", quantity=0.01, price=25_000.0, time_in_force="GTC"
 )
 print(req["method"], req["url"])
-print(req["headers"])         # {'X-MBX-APIKEY': 'YOUR_API_KEY'}
-print(req["query_string"])    # ...&signature=<hmac-sha256>
+print(req["headers"])  # {'X-MBX-APIKEY': 'YOUR_API_KEY'}
+print(req["query_string"])  # ...&signature=<hmac-sha256>
 
 # An OCO order pairs a take-profit limit with a protective stop.
 oco = client.prepare_oco_order(
-    "BTCUSDT", "SELL", quantity=0.01,
-    price=30_000.0, stop_price=24_000.0, stop_limit_price=23_900.0,
+    "BTCUSDT",
+    "SELL",
+    quantity=0.01,
+    price=30_000.0,
+    stop_price=24_000.0,
+    stop_limit_price=23_900.0,
 )
 
 # Market data and balances.
@@ -109,8 +113,8 @@ print(f"Trades:   {result.trades}")
 ```python
 from binance_trading_bot import rsi, sma, RsiStrategy, Signal
 
-sma(prices, window=10)            # -> trailing mean
-rsi(prices, period=14)            # -> Wilder's RSI in [0, 100]
+sma(prices, window=10)  # -> trailing mean
+rsi(prices, period=14)  # -> Wilder's RSI in [0, 100]
 
 strat = RsiStrategy(period=14, lower=30, upper=70)
 assert strat.signal(prices) in (Signal.BUY, Signal.SELL, Signal.HOLD)
